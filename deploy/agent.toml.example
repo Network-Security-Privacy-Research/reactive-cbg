@@ -1,0 +1,152 @@
+# R-CBG agent config — copy to deploy/rendered/<alias>.toml and edit.
+#
+# Two fields are node-specific and MUST be set: node_id and capture_iface.
+# Everything else has a working default and is documented here so a value can be
+# changed on purpose rather than by guess.
+#
+# Validate before installing:   rcbg-agent -config this-file -check
+
+# Identifies the node in every record. The central analysis joins RTTs to
+# landmark positions by this string, so it must be unique across the fleet and
+# must not change once a node has produced data.
+node_id = "example-node"
+
+# NO POSITION HERE, on purpose. The agent never uses one: it records RTTs and
+# the central box joins them to positions by node_id. Keeping coordinates on the
+# nodes would mean a fleet-wide config push every time a landmark is refined, to
+# update a field nothing reads, and a stale copy on a box is a silently wrong
+# answer.
+
+# Ports the agent opens real OS listeners on. It accepts the connection so the
+# handshake completes, reads the kernel's RTT, and closes without reading or
+# writing a byte -- there is no service to exploit and no banner to fingerprint.
+#
+# UNIFORMITY MATTERS MORE THAN LENGTH. A scanner that sweeps only one port
+# yields constraints from the nodes listening on it, so a port missing on some
+# nodes weakens exactly those targets. Drop a port only when it collides with
+# something already listening on that box, and record that you did.
+#
+# 5900 (VNC) and 445 (SMB) drew 48% and 24% of all records in our run; 80, 443,
+# 23 and 3389 another 18%. The remaining 17 ports together carried under 10%,
+# but they cost nothing and they catch scanners the popular ports miss.
+listen_ports = [80, 443, 8080, 8443, 8000, 8888, 3128, 23, 2323, 3389, 5900, 21, 5555, 3306, 5432, 6379, 1433, 27017, 9200, 445, 2375, 5060, 7547]
+
+# Ports the agent must refuse to bind, because this host needs them. Nothing is
+# blocked unless you say so: only you know what the machine already runs, and a
+# built-in list would be a guess about your deployment rather than a safeguard.
+#
+# The installer independently refuses any listen_ports entry that is ALREADY
+# bound when it runs, by asking the kernel -- so this list is for ports you want
+# protected even when the service happens to be down, and for making the config
+# say out loud what the box is for.
+#
+# 22 is the usual entry. Add whatever else this host answers on, including
+# services that happen to be stopped right now -- the installer's check only
+# sees what is bound at the moment it runs, so this list is what protects a port
+# across a restart.
+#
+# One port worth knowing about either way: 25 is filtered inbound by many
+# providers, so a listener there tends to record nothing whether you keep it or
+# not.
+never_bind = [22]
+
+log_path = "/var/lib/rcbg/measurements.jsonl"
+log_max_mb = 512
+log_keep = 3
+# Gzip rotated logs (~11x on real measurement data). Rotated files are never
+# appended to, so this costs nothing but a backgrounded gzip, and it is what
+# keeps a scan burst from pushing records out of the retention window between
+# central pulls.
+log_compress = true
+flush_after_sec = 10
+
+# AF_PACKET capture, for the two things TCP_INFO cannot give you:
+#   1. stateless scanners that never complete the handshake. accept() never
+#      returns for them, so TCP_INFO never sees them -- but a RST usually comes
+#      back, and SYN-ACK -> RST is a full round trip we can time.
+#   2. TTL, IP-ID, window and the TCP option fingerprint, which no socket option
+#      exposes.
+#
+# capture_iface MUST match this node's real interface name. Get it with:
+#     ip -o -4 route show default | awk '{print $5}'
+# Common values: eth0, enp1s0, ens3. A wrong name does not fail loudly -- the
+# agent logs "capture disabled" and degrades to TCP_INFO only, which silently
+# drops every stateless scanner. The installer greps for that line; read it.
+capture_enabled = true
+capture_iface = "eth0"
+
+# A banner elicits a data ACK, which is a second round trip on the same flow and
+# therefore a second RTT sample. Empty means the agent writes nothing at all.
+#
+# It IS a change in exposure: a port that says nothing is not a service, a port
+# that answers is more interesting to whoever is on the other end, and some
+# providers care. Treat a non-empty banner as a deliberate experiment on named
+# nodes, not a fleet default.
+banner = ""
+
+# ---------------------------------------------------------------------------
+# ACTIVE BACK-PROBE. Off by default. Turning it on means THIS NODE SENDS
+# UNSOLICITED PACKETS.
+#
+# What it does: right after measuring an inbound connection, it probes that
+# source once -- one ICMP echo and one TCP connect() to each port below, all
+# three always, no early exit -- to establish whether conventional active
+# geolocation could have located that host at all. A refusal is as good as an
+# acceptance: SYN -> RST is a clean round trip from the target's own kernel with
+# no service involved.
+#
+# Why from the node rather than centrally: a host that is scanning you right now
+# is provably alive, so if it ignores the probe that is filtering, not an
+# address that went dark between the sighting and a later sweep. Probing locally
+# keeps that gap to seconds and the gap is logged as lag_ms so the claim is
+# checkable.
+#
+# Some providers forbid this. It is per-node so a single complaint is one config
+# edit, and to stop it immediately with no restart and no config edit:
+#     touch /var/lib/rcbg/STOP-PROBING
+active_probe_enabled = false
+
+[active_probe]
+# Two ports, not eight. Every extra port multiplies the packets sent per target
+# for a steeply diminishing chance of an answer, and these two overlap heavily
+# as it is.
+tcp_ports = [80, 443]
+icmp = true
+
+# Deliberately slow. A probe you skipped costs one row of a table; a provider
+# complaint costs a node.
+rate_per_sec = 2.0
+# Burst tolerance, in seconds' worth of tokens. Arrivals are bursty in a way the
+# sustained rate is not: measured over 12,013 busy node-seconds the median was 1
+# probe-eligible arrival and the 99.9th percentile was 41, so a bucket holding
+# one second's worth discarded ~10% of all probe opportunities while the fleet
+# ran at under 20% of its daily cap. Refill still governs the long-run rate, so
+# this widens what a burst may borrow, not what is sent on average.
+burst_seconds = 20
+daily_cap = 20000
+# Without this, one scanner that sweeps you all day is probed thousands of
+# times. The agent refuses to start if it is 0. Expect the probe log to be
+# mostly `cooldown` skips as a result -- 85% in our run. They are logged
+# individually on purpose: a silent skip makes the denominator unknowable, and
+# "responsive" only means something against a known count of probes sent.
+cooldown_hours = 24
+timeout_ms = 2000
+workers = 8
+# Bounded, and work is DROPPED when full, so the reaper that writes measurement
+# records never blocks on the network. The measurement comes first.
+queue_depth = 1024
+
+log_path = "/var/lib/rcbg/probes.jsonl"
+log_max_mb = 128
+log_keep = 3
+kill_switch_path = "/var/lib/rcbg/STOP-PROBING"
+
+# Addresses this node must never probe, as CIDRs, on top of the built-in bogon
+# set (the agent always refuses RFC1918, multicast, link-local and reserved
+# space regardless of what is here).
+#
+# PUT YOUR OWN FLEET IN HERE, both address families. Those RTTs are the
+# calibration, and testing a landmark with the measurements that defined it is
+# circular. The list is empty in this template because the real one names every
+# host in a measurement fleet, which is not something to ship in an example.
+do_not_probe = []

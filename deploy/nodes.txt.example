@@ -1,0 +1,9 @@
+# One SSH alias or hostname per line; blank lines and # comments ignored.
+# Only needed by scripts that act on the whole fleet (provision-nopasswd.sh
+# --all). deploy-node.sh takes the alias as an argument and does not read this.
+#
+# Copy to nodes.txt and fill in. Deliberately shipped empty: the real roster
+# names every host in a live measurement fleet.
+#
+# mynode-1
+# mynode-2

@@ -1,0 +1,57 @@
+[Unit]
+Description=R-CBG passive measurement agent
+Documentation=https://github.com/Network-Security-Privacy-Research/reactive-cbg
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rcbg-agent -config /etc/rcbg/agent.toml
+Restart=on-failure
+RestartSec=10
+
+# Run unprivileged. The two things the agent genuinely needs are granted as
+# ambient capabilities rather than by running as root:
+#   CAP_NET_RAW           - AF_PACKET capture (SYN-ACK -> RST timing, fingerprints)
+#   CAP_NET_BIND_SERVICE  - bind honeypot ports below 1024 (80, 443, 23)
+User=rcbg
+Group=rcbg
+AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# The agent must never be the reason the host falls over, whatever else that
+# host is for. It yields CPU and disk to everything else and caps its own
+# memory, so a scan burst cannot turn into an outage for the machine's real
+# work. Raise MemoryMax if you run a much larger listen_ports set; 192M was
+# ample for 23 ports at several million records a day.
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=192M
+TasksMax=512
+LimitNOFILE=65536
+
+# Filesystem containment: the log directory is the only thing it may write.
+StateDirectory=rcbg
+ReadWritePaths=/var/lib/rcbg
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_NETLINK is required: Go's net.InterfaceByName resolves the capture
+# interface over netlink, and without it seccomp returns EAFNOSUPPORT and the
+# packet capture silently degrades to TCP_INFO only.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_PACKET AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

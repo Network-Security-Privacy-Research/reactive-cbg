@@ -1,0 +1,4 @@
+# Build outputs. `go build ./...` drops an unstripped binary named after the
+# directory; the documented build drops the stripped binary in agent/bin/.
+/agent/agent
+/agent/bin/
